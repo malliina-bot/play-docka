@@ -1,0 +1,43 @@
+# Assumes build environment aws/codebuild/java:openjdk-8 which includes JDK, Docker and awscli.
+# Assumes a container name in environment variable CONTAINER_NAME and an ECR repo in variable REPOSITORY_URI.
+# Can be used with ECS.
+version: 0.2
+env:
+  variables:
+    SBT_VERSION: "1.2.8"
+    HTTP_PORT: "9001"
+phases:
+  install:
+    commands:
+      - echo Installing SBT $SBT_VERSION...
+      - apt-get update -y
+      - curl -L -o sbt-$SBT_VERSION.deb https://dl.bintray.com/sbt/debian/sbt-$SBT_VERSION.deb
+      - dpkg -i sbt-$SBT_VERSION.deb
+      - sbt sbtVersion
+  pre_build:
+    commands:
+      - echo Logging in to Amazon ECR...
+      - aws --version
+      - $(aws ecr get-login --region $AWS_DEFAULT_REGION --no-include-email)
+      - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
+      - IMAGE_TAG=${COMMIT_HASH:=latest}
+  build:
+    commands:
+      - echo Build started on `date`
+      - echo Building Docker image from commit hash $COMMIT_HASH...
+      - sbt docker:stage
+      - docker build -t $REPOSITORY_URI:latest target/docker/stage
+      - docker tag $REPOSITORY_URI:latest $REPOSITORY_URI:$IMAGE_TAG
+  post_build:
+    # at-character is used as the delimiter
+    commands:
+      - echo Build completed on `date`
+      - echo Pushing Docker image to $REPOSITORY_URI:$IMAGE_TAG...
+      - docker push $REPOSITORY_URI:latest
+      - docker push $REPOSITORY_URI:$IMAGE_TAG
+      - printf '[{"name":"%s","imageUri":"%s"}]' $CONTAINER_NAME $REPOSITORY_URI:$IMAGE_TAG > imagedefinitions.json
+      - cat imagedefinitions.json
+      - echo Build complete
+artifacts:
+  files:
+    - imagedefinitions.json
